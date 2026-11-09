@@ -21,9 +21,12 @@ except ImportError:  # imported outside a package (pytest collection)
 logger = logging.getLogger(__name__)
 
 
+_CTX = None  # the PluginContext handed to register()
+
+
 def _cwd() -> str:
-    from hermes_cli.plugin_session import session_cwd
-    return session_cwd()
+    """The calling session's working directory, via the public ``ctx.session_cwd()``."""
+    return _CTX.session_cwd() if _CTX is not None else ""
 
 
 def _is_backstop_session() -> bool:
@@ -85,6 +88,8 @@ _TOOLS = [
 
 
 def register(ctx) -> None:
+    global _CTX
+    _CTX = ctx
     for name, fn, emoji, schema in _TOOLS:
         ctx.register_tool(name=name, toolset=core.TOOLSET, schema=schema, handler=_wrap(fn),
                           description=schema["description"], emoji=emoji)

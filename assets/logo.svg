@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Backstop</title>
+  <rect width="512" height="512" rx="112" fill="#0B0F2E"/>
+  <g stroke="#D9FF3F" stroke-linecap="round" fill="none">
+    <path d="M 118 236 L 118 344 Q 118 400 174 400 L 338 400 Q 394 400 394 344 L 394 236" stroke-width="32" stroke-linejoin="round"/>
+    <g stroke-width="14" stroke-opacity="0.5">
+      <line x1="206" y1="252" x2="206" y2="386"/><line x1="306" y1="252" x2="306" y2="386"/>
+      <line x1="136" y1="318" x2="376" y2="318"/>
+    </g>
+  </g>
+  <g stroke="#FFFFFF" stroke-width="14" stroke-linecap="round" stroke-opacity="0.55">
+    <line x1="228" y1="64" x2="228" y2="102"/><line x1="284" y1="52" x2="284" y2="98"/>
+  </g>
+  <circle cx="256" cy="166" r="38" fill="#FF5C5C"/>
+</svg>

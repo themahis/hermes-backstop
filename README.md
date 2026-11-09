@@ -1,5 +1,7 @@
 # Backstop
 
+![Backstop: a failed build in your terminal, diagnosed read-only in Hermes](assets/banner.png)
+
 When a build or test command fails in your terminal, Backstop asks Hermes why. You don't need to copy or paste anything.
 
 ```
@@ -65,7 +67,7 @@ shell hook ──► <HERMES_HOME>/plugin-data/backstop/spool/<id>.json
 - **Tested end to end on Windows only:** Hermes 0.22.5 (agent), Desktop 0.23.0 and PowerShell 7. The bash and zsh hooks are tested by CI (Linux, macOS and Git Bash on Windows) up to the spool record that the gateway reads. A full run through the gateway and Desktop has not been tested on them.
 - **The turn cap is only a request.** Some gateways reject `max_turns`. Backstop then retries without it and shows a warning, so on those gateways a diagnosis has no turn limit. The 5-minute timeout still applies.
 - **A diagnosis takes time.** In our tests it took 30 to 160 seconds, depending on the model.
-- **Some imports are internal to Hermes.** The tools use Hermes' session policy to refuse to act outside a Backstop session. If a future Hermes release changes that internal API, the tools refuse to run at all. They do not fall back to running unchecked.
+- **Two imports are internal to Hermes** (see Disclosure). The tools use Hermes' session policy to refuse to act outside a Backstop session. Hermes has no public API for this check yet. If a future release changes the internal one, the tools refuse to run at all. They never fall back to running unchecked.
 
 ## Install
 
@@ -102,18 +104,44 @@ The hook wraps an opt-in list of commands: `npm`, `npx`, `pnpm`, `yarn`, `bun`, 
 
 ## Disclosure
 
-- **Network:** Backstop makes no network calls of its own. The diagnosis session sends this data to **the model you configured, which may be a cloud provider**:
+- **Model calls (inference cost):** every recorded failure automatically starts **one** diagnosis session, and nobody has to approve it first. That session sends this data to **the model you configured, which may be a cloud provider**:
   - The tail of the failed command's output, after secrets are redacted with Hermes' egress redaction.
   - The command line and the working directory.
   - Excerpts of project files.
-- **Files:**
-  - The shell hook writes one small marker file per open incident to `plugin-data/backstop/open/`, so it can recognise the fix.
-  - The shell hook writes one JSON file per failure to `<HERMES_HOME>/plugin-data/backstop/spool/`. The gateway deletes the file once it has read it.
+
+  Backstop makes no network calls of its own; everything goes through Hermes' session API with your provider.
+- **Reads outside its own data:**
+  - The gateway reads the project files the error output points to, so it can quote them.
+  - The gateway records the size and mtime of the project's files, before and after the diagnosis, to detect a stale result. It skips `.git`, `node_modules`, virtualenvs and build output.
+  - The diagnosis tools read files only inside that project directory.
+- **Files it writes:**
+  - The shell hook writes one JSON file per failure to `<HERMES_HOME>/plugin-data/backstop/spool/`. The gateway deletes it after reading.
+  - The shell hook writes one small marker per open incident to `plugin-data/backstop/open/`.
   - Backstop appends status lines (no output text) to `plugin-data/backstop/history.jsonl`.
   - Backstop never modifies project files.
-- **Background work:** one thread inside the Hermes gateway polls the spool directory once a second.
-- **Shell:** the hook defines PowerShell, bash or zsh functions that shadow the listed commands. Each command still runs exactly once. Backstop never re-runs a command.
-- **Credentials:** Backstop uses none. Diagnosis sessions go through Hermes' own session API with your configured provider.
+- **Shell:**
+  - The hook defines PowerShell, bash or zsh functions that shadow the listed commands. Each command still runs exactly once, and Backstop never re-runs one.
+  - `shell/install.ps1` adds one line to your PowerShell profile and `shell/install.sh` adds one line to `~/.bashrc` / `~/.zshrc`. Both have an uninstall option. Neither changes your execution policy.
+  - `shell/backstop-terminal.cmd` opens one PowerShell window with `-ExecutionPolicy Bypass` for that process only, so you can try the hook without changing any setting.
+- **Background work:** one thread inside the Hermes gateway polls the spool directory once a second. Nothing waits for a person. A failure that no Desktop window picks up expires after 30 minutes, and a diagnosis with no answer is interrupted after 5 minutes.
+- **Edits only with your approval:** the diagnosis session has read-only tools. **Fix it** only drafts a message into a normal chat, which keeps your usual tools and approvals. Nothing is sent until you press Enter.
+- **Credentials and telemetry:** none. Backstop stores no credentials and reports nothing anywhere.
+- **Version coupling:** two imports are internal to Hermes:
+  - `gateway.session_policy.active_policy` is the read-only guard. If it ever disappears, the tools refuse to run.
+  - `agent.redact.redact_for_egress` redacts secrets. It has a built-in fallback.
+
+  `hermes plugins validate` lists both as warnings.
+
+## Screenshots
+
+These were captured from a real run on Windows with Hermes Desktop 0.23.0.
+
+![The failed build in PowerShell, sent to Hermes](assets/screenshots/1-terminal-failure.png)
+![The status-bar menu: cause summary, Open diagnosis, Fix it, Dismiss](assets/screenshots/2-status-menu.png)
+![The read-only diagnosis: cause, evidence, file:line, fix, status](assets/screenshots/3-diagnosis-and-menu.png)
+![Fix it: the draft waits in a separate chat until you send it](assets/screenshots/4-fix-it-draft.png)
+![The same build passes and Backstop closes the incident](assets/screenshots/5-terminal-passes.png)
+![The indicator shows fixed](assets/screenshots/6-status-fixed.png)
 
 ## Tests
 
