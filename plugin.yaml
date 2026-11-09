@@ -1,0 +1,22 @@
+name: backstop
+version: 0.1.0
+description: "When a build or test command fails in your terminal, Hermes opens a read-only diagnosis session for it and tells you the cause, the file:line and the fix — and warns you if you changed the project while it was reading."
+author: "themahissss"
+license: MIT
+requires_hermes: ">=0.22.5"
+provides_tools:
+  - backstop_read_file
+  - backstop_search
+  - backstop_list
+tags: [developer-tools, terminal, debugging, desktop]
+config_schema:
+  diagnosis_model:
+    type: str
+    default: ""
+    description: "Model for diagnosis sessions, on your configured provider. Empty = your default model."
+    required: false
+  max_turns:
+    type: int
+    default: 8
+    description: "Turn limit requested for each diagnosis session. Some gateways do not support it; Backstop then retries without it and shows a warning. Not a spending cap."
+    required: false

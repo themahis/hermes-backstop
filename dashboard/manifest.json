@@ -1,0 +1,7 @@
+{
+  "name": "backstop",
+  "label": "Backstop",
+  "description": "Diagnoses failed terminal commands in a read-only Hermes session.",
+  "version": "0.1.0",
+  "api": "plugin_api.py"
+}

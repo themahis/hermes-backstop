@@ -1,0 +1,34 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install -y zsh
+      - run: pip install pytest fastapi
+      - run: pytest -q
+      - run: node --test tests/desktop.test.cjs
+  validate:
+    # The catalog's admission gate, against the latest Hermes release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: backstop
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: git clone --depth 1 --branch v0.23.0 https://github.com/NousResearch/hermes-agent hermes-agent
+      - run: pip install ./hermes-agent
+      - run: hermes plugins validate "$GITHUB_WORKSPACE/backstop" --install-deps
