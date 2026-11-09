@@ -20,15 +20,18 @@ jobs:
       - run: pytest -q
       - run: node --test tests/desktop.test.cjs
   validate:
-    # The catalog's admission gate, against the latest Hermes release.
+    # The catalog's admission gate, installed the way the catalog CI does it, on the latest release.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          path: backstop
-      - uses: actions/setup-python@v5
+          repository: NousResearch/hermes-agent
+          ref: v0.23.0
+      - uses: actions/checkout@v4
         with:
-          python-version: "3.11"
-      - run: git clone --depth 1 --branch v0.23.0 https://github.com/NousResearch/hermes-agent hermes-agent
-      - run: pip install ./hermes-agent
-      - run: hermes plugins validate "$GITHUB_WORKSPACE/backstop" --install-deps
+          path: _plugin/backstop
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: python
+          extras: '[]'
+      - run: timeout 600 hermes plugins validate --install-deps "$GITHUB_WORKSPACE/_plugin/backstop" </dev/null
