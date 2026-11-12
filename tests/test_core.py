@@ -111,3 +111,52 @@ def test_tool_guard_and_arg_filter(monkeypatch, proj):
     monkeypatch.setattr(mod, "_is_backstop_session", lambda: True)
     out = json.loads(handler({"path": "src/app.ts", "reason": "model-added field"}))
     assert out["total_lines"] == 2
+
+
+# ── review fixes: secrets are never readable by a diagnosis ─────────────────────────────────
+
+
+@pytest.fixture
+def secret_proj(proj):
+    (proj / ".env").write_text("API_KEY=sk-live-abcdefghijklmnop\n", encoding="utf-8")
+    (proj / ".env.local").write_text("TOKEN=t0k3n\n", encoding="utf-8")
+    (proj / ".ssh").mkdir()
+    (proj / ".ssh" / "id_rsa").write_text("-----BEGIN PRIVATE KEY-----\n", encoding="utf-8")
+    (proj / ".git").mkdir()
+    (proj / ".git" / "config").write_text("[remote]\n url = https://x:SECRETPASS@host/r\n", encoding="utf-8")
+    return proj
+
+
+@pytest.mark.parametrize("path", [".env", ".env.local", ".ssh/id_rsa", ".git/config", "src/../.env", ".ssh"])
+def test_dot_paths_and_env_files_are_refused(secret_proj, path):
+    with pytest.raises(ValueError, match="(?i)denied|cannot be read"):
+        core.tool_read_file(str(secret_proj), path)
+
+
+def test_list_and_search_never_expose_hidden_files(secret_proj):
+    entries = core.tool_list(str(secret_proj), ".")["entries"]
+    assert not any(e.startswith(".") for e in entries) and "src/" in entries
+    hits = core.tool_search(str(secret_proj), r"sk-live|SECRETPASS|PRIVATE KEY|t0k3n")["matches"]
+    assert hits == []
+
+
+def test_output_pointing_at_secrets_does_not_pull_them_into_the_prompt(secret_proj):
+    out = "error at .env:1\nsee .ssh/id_rsa:1\nsrc/app.ts(1,5): error TS2322"
+    refs = core.referenced_files(out, str(secret_proj))
+    assert [r["path"] for r in refs] == ["src/app.ts"]
+    prompt = core.build_prompt(rec(secret_proj, output=out), refs)
+    assert "sk-live" not in prompt and "PRIVATE KEY" not in prompt   # file contents never reach the model
+    assert "- .env" not in prompt and "- .ssh" not in prompt           # nor are they offered as files to read
+
+
+def test_unsafe_working_directories_are_never_diagnosed(tmp_path, monkeypatch):
+    home = tmp_path / "home"; (home / "work").mkdir(parents=True); (home / ".ssh").mkdir()
+    hermes = tmp_path / "hermes"; (hermes / "x").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home)); monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(core, "hermes_home", lambda: hermes)
+    base = {"v": 1, "exit": 2, "output": "boom"}
+    for cwd, ok in ((home, False), (tmp_path, False), (home / ".ssh", False), (hermes, False), (hermes / "x", False),
+                    (home / "work", True)):
+        assert core.classify(dict(base, cwd=str(cwd)))[0] is ok, cwd
+    with pytest.raises(ValueError):
+        core.tool_read_file(str(home), "work")

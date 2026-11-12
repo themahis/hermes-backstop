@@ -73,7 +73,33 @@ def classify(record: dict) -> tuple[bool, str]:
     cwd = record.get("cwd")
     if not isinstance(cwd, str) or not os.path.isabs(cwd) or not os.path.isdir(cwd):
         return False, "cwd missing"
+    unsafe = unsafe_project_dir(cwd)
+    if unsafe:
+        return False, unsafe
     return True, "failed"
+
+
+def unsafe_project_dir(cwd: str) -> str | None:
+    """Why ``cwd`` must not become a diagnosis root, or None.
+
+    The diagnosis tools may read anything under the project directory, and the failing command's
+    output (which an attacker can influence) steers what they read. So a failure run from the home
+    directory, an ancestor of it, a filesystem root, anywhere under HERMES_HOME, or inside any
+    dot-directory (~/.ssh, ~/.config, ...) is never diagnosed.
+    """
+    real = os.path.normcase(os.path.realpath(cwd))
+    home = os.path.normcase(os.path.realpath(os.path.expanduser("~")))
+    hh = os.path.normcase(os.path.realpath(str(hermes_home())))
+    if real == home or _inside(home, real):
+        return "cwd is the home directory or contains it"
+    if os.path.dirname(real) == real:
+        return "cwd is a filesystem root"
+    if real == hh or _inside(real, hh):
+        return "cwd is inside HERMES_HOME"
+    parts = [p for p in re.split(r"[\\/]+", os.path.realpath(cwd)) if p]
+    if any(p.startswith(".") and p not in (".", "..") for p in parts):
+        return "cwd is inside a dot-directory"
+    return None
 
 
 _VOLATILE = [
@@ -113,11 +139,12 @@ def tail(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     return "[... earlier output trimmed ...]\n" + (cut[nl + 1:] if 0 <= nl < 400 else cut)
 
 
-def redact(text: str) -> str:
-    """Hermes' own egress redaction when available (secrets, tokens); a conservative fallback otherwise."""
+def redact(text: str, file_read: bool = False) -> str:
+    """Hermes' redaction (``agent.redact.redact_sensitive_text``, forced on: everything here goes to a
+    model) when available; a conservative fallback otherwise. ``file_read`` for file content."""
     try:
-        from agent.redact import redact_for_egress  # type: ignore
-        return redact_for_egress(text)
+        from agent.redact import redact_sensitive_text  # type: ignore
+        return redact_sensitive_text(text, force=True, file_read=file_read)
     except Exception:
         pass
     text = re.sub(r"(?i)\b(api[_-]?key|token|secret|password|passwd|authorization)\b(\s*[:=]\s*)(\S+)",
@@ -150,7 +177,7 @@ def referenced_files(output: str, cwd: str, limit: int = 12) -> list[dict]:
             real = os.path.realpath(p)
         except (OSError, ValueError):
             continue
-        if not _inside(real, root) or not os.path.isfile(real):
+        if not _inside(real, root) or not os.path.isfile(real) or read_block_error(root, real):
             continue
         rel = os.path.relpath(real, root).replace("\\", "/")
         if rel in seen:
@@ -179,7 +206,7 @@ def fingerprint(cwd: str, cap: int = FINGERPRINT_FILE_CAP) -> dict[str, list[int
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
         for name in filenames:
-            if name.endswith(SKIP_SUFFIXES):
+            if name.endswith(SKIP_SUFFIXES) or name.startswith("."):
                 continue
             full = os.path.join(dirpath, name)
             try:
@@ -292,13 +319,38 @@ MAX_READ_BYTES = 1_000_000
 MAX_READ_LINES = 400
 
 
+def read_block_error(root: str, target: str) -> str | None:
+    """Why ``target`` (an absolute, resolved path under ``root``) must not be read, or None.
+
+    Applies Hermes' own read denylist (``agent.file_safety.get_read_block_error``: credential stores,
+    project ``.env`` files, internal caches) and, independently of it, refuses any dot-prefixed path
+    segment below the project root (``.env*``, ``.ssh``, ``.git``, ``.aws``, ``.npmrc`` ...)."""
+    rel = os.path.relpath(target, root)
+    if rel != "." and any(seg.startswith(".") and seg not in (".", "..") for seg in re.split(r"[\\/]+", rel)):
+        return f"Access denied: {rel.replace(os.sep, '/')} is a hidden (dot) path and cannot be read"
+    try:
+        from agent.file_safety import get_read_block_error  # type: ignore
+    except Exception:
+        return None
+    try:
+        return get_read_block_error(target)
+    except Exception:
+        return "Access denied: the read could not be safety-checked"
+
+
 def _resolve_in(cwd: str, rel: str) -> str:
     if not cwd or not os.path.isdir(cwd):
         raise ValueError("this session has no project directory")
+    unsafe = unsafe_project_dir(cwd)
+    if unsafe:
+        raise ValueError(f"this project directory cannot be read: {unsafe}")
     root = os.path.realpath(cwd)
     target = os.path.realpath(os.path.join(root, rel or "."))
     if not _inside(target, root):
         raise ValueError("path is outside the project directory")
+    blocked = read_block_error(root, target)
+    if blocked:
+        raise ValueError(blocked)
     return target
 
 
@@ -316,7 +368,7 @@ def tool_read_file(cwd: str, path: str, start_line: int | None = None, end_line:
     start = max(1, int(start_line or 1))
     end = min(len(lines), int(end_line or start + MAX_READ_LINES - 1), start + MAX_READ_LINES - 1)
     body = "\n".join(f"{i:>5}| {lines[i - 1]}" for i in range(start, end + 1))
-    return {"path": path, "total_lines": len(lines), "start_line": start, "end_line": end, "content": redact(body)}
+    return {"path": path, "total_lines": len(lines), "start_line": start, "end_line": end, "content": redact(body, file_read=True)}
 
 
 def tool_list(cwd: str, path: str = ".") -> dict:
@@ -324,9 +376,14 @@ def tool_list(cwd: str, path: str = ".") -> dict:
     if not os.path.isdir(target):
         return {"error": f"not a directory: {path}"}
     entries = []
-    for name in sorted(os.listdir(target))[:300]:
+    root = os.path.realpath(cwd)
+    for name in sorted(os.listdir(target)):
         full = os.path.join(target, name)
+        if read_block_error(root, os.path.realpath(full)):
+            continue
         entries.append(name + ("/" if os.path.isdir(full) else ""))
+        if len(entries) >= 300:
+            break
     return {"path": path, "entries": entries}
 
 
@@ -346,6 +403,8 @@ def tool_search(cwd: str, pattern: str, glob: str | None = None, max_results: in
             if glob and not fnmatch.fnmatch(rel, glob) and not fnmatch.fnmatch(name, glob):
                 continue
             full = os.path.join(dirpath, name)
+            if name.startswith(".") or read_block_error(root, os.path.realpath(full)):
+                continue
             try:
                 if os.path.getsize(full) > MAX_READ_BYTES:
                     continue
@@ -360,10 +419,10 @@ def tool_search(cwd: str, pattern: str, glob: str | None = None, max_results: in
                 if rx.search(line):
                     hits.append(f"{rel}:{i}: {line.strip()[:200]}")
                     if len(hits) >= max_results:
-                        return {"matches": [redact(h) for h in hits], "truncated": True}
+                        return {"matches": [redact(h, file_read=True) for h in hits], "truncated": True}
             if scanned > 5000:
-                return {"matches": [redact(h) for h in hits], "truncated": True}
-    return {"matches": [redact(h) for h in hits], "truncated": False}
+                return {"matches": [redact(h, file_read=True) for h in hits], "truncated": True}
+    return {"matches": [redact(h, file_read=True) for h in hits], "truncated": False}
 
 
 def now() -> float:

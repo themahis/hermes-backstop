@@ -20,7 +20,6 @@ __backstop_home() {
 }
 
 BACKSTOP_DATA="$(__backstop_home)/plugin-data/backstop"
-BACKSTOP_OUT="${TMPDIR:-/tmp}/backstop.$$.out"
 BACKSTOP_DEFAULT="npm npx pnpm yarn bun deno tsc node python python3 py pytest cargo go dotnet make gradle mvn eslint jest vitest ruff mypy"
 BACKSTOP_WRAPPED=""
 [ -n "$ZSH_VERSION" ] && zmodload zsh/datetime 2>/dev/null   # $EPOCHREALTIME
@@ -64,12 +63,12 @@ __backstop_json() {
 # __backstop_write <json body without braces> -> prints the record id. Atomic: temp name, then rename.
 __backstop_write() {
     local spool="$BACKSTOP_DATA/spool" id shellname
-    mkdir -p "$spool" || return 1
+    (umask 077; mkdir -p "$spool") || return 1
     local ms; ms="$(__backstop_ms)"
     id="$(date +%Y%m%d%H%M%S)${ms#"${ms%???}"}-$(printf '%s' "$$|$ms|$1" | __backstop_sha1 | cut -c1-8)"
     if [ -n "$ZSH_VERSION" ]; then shellname="zsh $ZSH_VERSION"; else shellname="bash ${BASH_VERSION%%[(]*}"; fi
-    printf '{"v": 1, "id": "%s", "ts": %s, "shell": "%s", %s}\n' "$id" "$(date +%s)" "$shellname" "$1" \
-        > "$spool/.$id.tmp" && mv -f "$spool/.$id.tmp" "$spool/$id.json" && printf '%s\n' "$id"
+    (umask 077; printf '{"v": 1, "id": "%s", "ts": %s, "shell": "%s", %s}\n' "$id" "$(date +%s)" "$shellname" "$1" \
+        > "$spool/.$id.tmp") && mv -f "$spool/.$id.tmp" "$spool/$id.json" && printf '%s\n' "$id"
 }
 
 __backstop_tty() { [ -t 0 ] && [ -t 1 ]; }   # tests override this
@@ -95,15 +94,17 @@ __backstop_interactive() {
 }
 
 __backstop_run() {
-    local name="$1" code start cwd cmd marker failed id body
+    local name="$1" code start cwd cmd marker failed id body out
     shift
     # Piped, redirected, captured ($(...)) or interactive: run untouched.
     if [ "$BACKSTOP_DISABLE" = "1" ] || ! __backstop_tty || __backstop_interactive "$name" "$@"; then
         command "$name" "$@"
         return
     fi
+    # Private capture file: unpredictable name, mode 0600 (mktemp), removed after the run.
+    out="$(mktemp "${TMPDIR:-/tmp}/backstop.XXXXXXXX")" || { command "$name" "$@"; return; }
     start="$(__backstop_ms)"
-    command "$name" "$@" 2>&1 | tee "$BACKSTOP_OUT"
+    command "$name" "$@" 2>&1 | tee "$out"
     code="${PIPESTATUS[0]-}${pipestatus[1]-}"   # bash / zsh: the command's exit, not tee's
     cwd="$(__backstop_cwd)"
     cmd="$name${*:+ $*}"
@@ -119,14 +120,14 @@ __backstop_run() {
             fi
         fi
     elif [ "$code" != 130 ] && [ "$code" != 143 ]; then   # Ctrl-C / SIGTERM are not failures
-        if id="$(__backstop_write "$body, \"output\": $(tail -n 2000 "$BACKSTOP_OUT" | tail -c 64000 | __backstop_json)")"; then
+        if id="$(__backstop_write "$body, \"output\": $(tail -n 2000 "$out" | tail -c 64000 | __backstop_json)")"; then
             mkdir -p "$BACKSTOP_DATA/open" && printf '%s' "$id" > "$marker"
             printf '\033[36m[backstop] exit %s - sent to Hermes for a read-only diagnosis\033[0m\n' "$code" >&2
         else
             printf '[backstop] could not record this run\n' >&2
         fi
     fi
-    rm -f "$BACKSTOP_OUT"
+    rm -f "$out"
     return "$code"
 }
 

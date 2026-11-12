@@ -67,7 +67,7 @@ shell hook ──► <HERMES_HOME>/plugin-data/backstop/spool/<id>.json
 - **Tested end to end on Windows only:** Hermes 0.22.5 (agent), Desktop 0.23.0 and PowerShell 7. The bash and zsh hooks are tested by CI (Linux, macOS and Git Bash on Windows) up to the spool record that the gateway reads. A full run through the gateway and Desktop has not been tested on them.
 - **The turn cap is only a request.** Some gateways reject `max_turns`. Backstop then retries without it and shows a warning, so on those gateways a diagnosis has no turn limit. The 5-minute timeout still applies.
 - **A diagnosis takes time.** In our tests it took 30 to 160 seconds, depending on the model.
-- **Two imports are internal to Hermes** (see Disclosure). The tools use Hermes' session policy to refuse to act outside a Backstop session. Hermes has no public API for this check yet. If a future release changes the internal one, the tools refuse to run at all. They never fall back to running unchecked.
+- **One import is internal to Hermes** (see Disclosure). The tools use Hermes' session policy to refuse to act outside a Backstop session. Hermes has no public API for this check yet. If a future release changes the internal one, the tools refuse to run at all. They never fall back to running unchecked.
 
 ## Install
 
@@ -105,7 +105,7 @@ The hook wraps an opt-in list of commands: `npm`, `npx`, `pnpm`, `yarn`, `bun`, 
 ## Disclosure
 
 - **Model calls (inference cost):** every recorded failure automatically starts **one** diagnosis session, and nobody has to approve it first. That session sends this data to **the model you configured, which may be a cloud provider**:
-  - The tail of the failed command's output, after secrets are redacted with Hermes' egress redaction.
+  - The tail of the failed command's output, after secrets are redacted with Hermes' `redact_sensitive_text` (forced on).
   - The command line and the working directory.
   - Excerpts of project files.
 
@@ -114,8 +114,12 @@ The hook wraps an opt-in list of commands: `npm`, `npx`, `pnpm`, `yarn`, `bun`, 
   - The gateway reads the project files the error output points to, so it can quote them.
   - The gateway records the size and mtime of the project's files, before and after the diagnosis, to detect a stale result. It skips `.git`, `node_modules`, virtualenvs and build output.
   - The diagnosis tools read files only inside that project directory.
+- **What is never read:** every read (tools, quoted excerpts, search, listing) goes through one gate:
+  - Hermes' own read denylist (`agent.file_safety.get_read_block_error`): credential stores, project `.env` files, internal caches.
+  - Any dot-prefixed path below the project (`.env*`, `.ssh`, `.git`, `.aws`, `.npmrc` …). Hidden entries are also left out of listings and searches.
+  - A failure is not diagnosed at all when it ran in your home directory (or a parent of it), a filesystem root, anywhere under `HERMES_HOME`, or inside a dot-directory. Command output can be steered by an attacker, so the diagnosis never gets a root where secrets live.
 - **Files it writes:**
-  - The shell hook writes one JSON file per failure to `<HERMES_HOME>/plugin-data/backstop/spool/`. The gateway deletes it after reading.
+  - The shell hook writes one JSON file per failure to `<HERMES_HOME>/plugin-data/backstop/spool/`. The gateway deletes it after reading. bash/zsh write it owner-only (mode 0600) and capture output in a private `mktemp` file that is removed after the run; PowerShell keeps the output in memory.
   - The shell hook writes one small marker per open incident to `plugin-data/backstop/open/`.
   - Backstop appends status lines (no output text) to `plugin-data/backstop/history.jsonl`.
   - Backstop never modifies project files.
@@ -126,11 +130,7 @@ The hook wraps an opt-in list of commands: `npm`, `npx`, `pnpm`, `yarn`, `bun`, 
 - **Background work:** one thread inside the Hermes gateway polls the spool directory once a second. Nothing waits for a person. A failure that no Desktop window picks up expires after 30 minutes, and a diagnosis with no answer is interrupted after 5 minutes.
 - **Edits only with your approval:** the diagnosis session has read-only tools. **Fix it** only drafts a message into a normal chat, which keeps your usual tools and approvals. Nothing is sent until you press Enter.
 - **Credentials and telemetry:** none. Backstop stores no credentials and reports nothing anywhere.
-- **Version coupling:** two imports are internal to Hermes:
-  - `gateway.session_policy.active_policy` is the read-only guard. If it ever disappears, the tools refuse to run.
-  - `agent.redact.redact_for_egress` redacts secrets. It has a built-in fallback.
-
-  `hermes plugins validate` lists both as warnings.
+- **Version coupling:** `gateway.session_policy.active_policy` is the read-only guard; Hermes has no public "active session toolsets" API yet. If it ever disappears, the tools refuse to run. `agent.file_safety` and `agent.redact` are used as the Hermes reviewers recommended; each has a built-in fallback.
 
 ## Screenshots
 

@@ -1,5 +1,5 @@
 name: backstop
-version: 0.1.0
+version: 0.1.1
 description: "When a build or test command fails in your terminal, Hermes opens a read-only diagnosis session for it and tells you the cause, the file:line and the fix — and warns you if you changed the project while it was reading."
 author: "themahissss"
 license: MIT

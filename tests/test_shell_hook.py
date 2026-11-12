@@ -58,6 +58,8 @@ def test_hook_records_failure_then_resolution(shell, tmp_path):
     assert os.path.isdir(rec["cwd"]) and core.classify(rec)[0]
     assert 'error TS2322: "x" \\ not number' in rec["output"] and "\033" not in rec["output"]
     assert "tab\there" in rec["output"]
+    if os.name != "nt":  # spool records carry command output: owner-only
+        assert files[0].stat().st_mode & 0o077 == 0
     files[0].unlink()
 
     r = run(shell, home, proj, 'FAKE_EXIT=0 fakebuild run build; FAKE_EXIT=0 fakebuild run build')
